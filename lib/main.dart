@@ -620,7 +620,12 @@ class _NewProjectScreenState extends State<NewProjectScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _busy = false);
-        toast(context, errText(e));
+        final m = errText(e);
+        toast(
+            context,
+            m.contains('already exists')
+                ? 'يوجد مستودع بهذا الاسم في حسابك، اختر اسمًا آخر'
+                : m);
       }
     }
   }
