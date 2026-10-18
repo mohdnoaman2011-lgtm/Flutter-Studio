@@ -264,7 +264,11 @@ class GitHubApi {
     );
   }
 
+  bool _isTransient(Object e) =>
+      e is! GitHubException || (e.statusCode ?? 0) >= 500;
+
   /// يتابع التشغيل الجديد بعد dispatchBuild حتى ينتهي.
+  /// أخطاء الشبكة العابرة لا توقف المتابعة، بل تُعاد المحاولة.
   Stream<BuildSnapshot> watchBuild(
     String owner,
     String repo, {
@@ -273,28 +277,55 @@ class GitHubApi {
     Duration poll = const Duration(seconds: 3),
   }) async* {
     int? runId;
+    var failures = 0;
     for (var i = 0; i < 20 && runId == null; i++) {
       await Future.delayed(poll);
-      final j = await _send('GET', '/repos/$owner/$repo/actions/runs', query: {
-        'event': 'workflow_dispatch',
-        'branch': branch,
-        'per_page': '5',
-      }) as Map<String, dynamic>;
-      for (final r in (j['workflow_runs'] as List)) {
-        final created = DateTime.parse(r['created_at'] as String);
-        if (created.isAfter(startedAt.subtract(const Duration(seconds: 30)))) {
-          runId = r['id'] as int;
-          break;
+      try {
+        final j =
+            await _send('GET', '/repos/$owner/$repo/actions/runs', query: {
+          'event': 'workflow_dispatch',
+          'branch': branch,
+          'per_page': '5',
+        }) as Map<String, dynamic>;
+        failures = 0;
+        for (final r in (j['workflow_runs'] as List)) {
+          final created = DateTime.parse(r['created_at'] as String);
+          if (created
+              .isAfter(startedAt.subtract(const Duration(seconds: 30)))) {
+            runId = r['id'] as int;
+            break;
+          }
         }
+      } catch (e) {
+        if (!_isTransient(e) || ++failures >= 20) rethrow;
       }
     }
     if (runId == null) {
       throw GitHubException('لم يظهر تشغيل جديد في Actions');
     }
+    yield* watchRun(owner, repo, runId, poll: poll);
+  }
+
+  /// يتابع تشغيلًا موجودًا حتى ينتهي (ويُستخدم أيضًا لاستئناف المتابعة).
+  Stream<BuildSnapshot> watchRun(
+    String owner,
+    String repo,
+    int runId, {
+    Duration poll = const Duration(seconds: 3),
+  }) async* {
+    var failures = 0;
     while (true) {
-      final s = await snapshot(owner, repo, runId);
-      yield s;
-      if (s.isFinished) return;
+      BuildSnapshot? s;
+      try {
+        s = await snapshot(owner, repo, runId);
+        failures = 0;
+      } catch (e) {
+        if (!_isTransient(e) || ++failures >= 40) rethrow;
+      }
+      if (s != null) {
+        yield s;
+        if (s.isFinished) return;
+      }
       await Future.delayed(poll);
     }
   }
