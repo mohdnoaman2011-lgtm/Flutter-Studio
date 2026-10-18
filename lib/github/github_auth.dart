@@ -75,20 +75,31 @@ class GitHubAuth {
   /// ينتظر حتى يوافق المستخدم على الرمز ثم يحفظ التوكن ويعيده.
   Future<String> pollForToken(DeviceCode code) async {
     var interval = code.interval;
+    var failures = 0;
     final deadline = DateTime.now().add(Duration(seconds: code.expiresIn));
 
     while (DateTime.now().isBefore(deadline)) {
       await Future.delayed(Duration(seconds: interval));
-      final res = await http.post(
-        Uri.https('github.com', '/login/oauth/access_token'),
-        headers: _json,
-        body: {
-          'client_id': clientId,
-          'device_code': code.deviceCode,
-          'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
-        },
-      );
-      final j = jsonDecode(res.body) as Map<String, dynamic>;
+      Map<String, dynamic> j;
+      try {
+        final res = await http.post(
+          Uri.https('github.com', '/login/oauth/access_token'),
+          headers: _json,
+          body: {
+            'client_id': clientId,
+            'device_code': code.deviceCode,
+            'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
+          },
+        ).timeout(const Duration(seconds: 20));
+        j = jsonDecode(res.body) as Map<String, dynamic>;
+        failures = 0;
+      } catch (_) {
+        // انقطاع مؤقت في الشبكة (مثلًا عند التبديل إلى المتصفح): نعيد المحاولة
+        if (++failures >= 20) {
+          throw GitHubException('تعذّر الاتصال بـ GitHub، تحقق من الإنترنت');
+        }
+        continue;
+      }
       final token = j['access_token'];
       if (token is String) {
         await _storage.write(key: _tokenKey, value: token);
