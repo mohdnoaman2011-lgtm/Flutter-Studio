@@ -113,7 +113,18 @@ class GitHubApi {
     if (res.statusCode >= 400) {
       var msg = res.body;
       try {
-        msg = (jsonDecode(res.body) as Map)['message'] as String? ?? msg;
+        final j = jsonDecode(res.body) as Map;
+        msg = j['message'] as String? ?? msg;
+        final errs = j['errors'];
+        if (errs is List && errs.isNotEmpty) {
+          final details = errs
+              .map((e) => e is Map
+                  ? (e['message'] ?? e['code'] ?? '').toString()
+                  : e.toString())
+              .where((t) => t.isNotEmpty)
+              .join(' · ');
+          if (details.isNotEmpty) msg = '$msg ($details)';
+        }
       } catch (_) {}
       throw GitHubException(msg, res.statusCode);
     }
