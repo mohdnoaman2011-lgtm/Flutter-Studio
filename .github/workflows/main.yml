@@ -32,8 +32,24 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Create Android folder if missing
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          HAS_GRADLE=no
+          [ -f android/app/build.gradle ] && HAS_GRADLE=yes
+          [ -f android/app/build.gradle.kts ] && HAS_GRADLE=yes
+          if [ "$HAS_GRADLE" = no ] || ! grep -q flutterEmbedding "$MANIFEST" 2>/dev/null; then
+            rm -rf android
+            flutter create --platforms=android --org com.example --project-name flutter_studio .
+            git checkout -- lib pubspec.yaml test || true
+          fi
+          grep -q "permission.INTERNET" "$MANIFEST" || sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' "$MANIFEST"
+
       - name: Pub get
         run: flutter pub get
+
+      - name: Generate launcher icons
+        run: dart run flutter_launcher_icons
 
       - name: Analyze
         run: flutter analyze --no-fatal-infos
