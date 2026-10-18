@@ -1,0 +1,69 @@
+name: Build Flutter Studio
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: apk or appbundle
+        type: choice
+        default: apk
+        options:
+          - apk
+          - appbundle
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Android folder if missing
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          HAS_GRADLE=no
+          [ -f android/app/build.gradle ] && HAS_GRADLE=yes
+          [ -f android/app/build.gradle.kts ] && HAS_GRADLE=yes
+          if [ "$HAS_GRADLE" = no ] || ! grep -q flutterEmbedding "$MANIFEST" 2>/dev/null; then
+            rm -rf android
+            flutter create --platforms=android --org com.example --project-name flutter_studio .
+            git checkout -- lib pubspec.yaml test || true
+          fi
+          grep -q "permission.INTERNET" "$MANIFEST" || sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' "$MANIFEST"
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        run: |
+          if [ -d test ]; then flutter test; else echo "no tests"; fi
+
+      - name: Build
+        run: >
+          flutter build ${{ inputs.target || 'apk' }} --release
+          --dart-define=GITHUB_CLIENT_ID=${{ vars.GH_OAUTH_CLIENT_ID }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-studio-release
+          path: |
+            build/app/outputs/flutter-apk/*.apk
+            build/app/outputs/bundle/release/*.aab
