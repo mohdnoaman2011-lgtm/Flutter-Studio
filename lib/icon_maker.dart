@@ -53,12 +53,12 @@ class PresetPainter extends CustomPainter {
       case IconShape.square:
         canvas.drawRRect(box(c, s * 0.46, s * 0.46, s * 0.08), fill);
       case IconShape.ring:
-        canvas.drawCircle(
-            c,
-            s * 0.22,
-            fill
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = s * 0.09);
+        final ring = Paint()
+          ..color = preset.fg
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = s * 0.09
+          ..isAntiAlias = true;
+        canvas.drawCircle(c, s * 0.22, ring);
       case IconShape.triangle:
         final path = Path()
           ..moveTo(c.dx, c.dy - s * 0.25)

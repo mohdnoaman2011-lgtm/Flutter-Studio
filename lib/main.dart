@@ -1,36 +1,38 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'apk_store.dart';
 import 'github/github_api.dart';
 import 'github/github_auth.dart';
 import 'github/github_login_screen.dart';
+import 'icon_maker.dart';
+import 'theme.dart';
+import 'widgets.dart';
 
-const _bg = Color(0xFF0E141B);
-const _surface = Color(0xFF16202A);
-const _border = Color(0xFF243140);
-const _accent = Color(0xFF4FC3F7);
-const _ok = Color(0xFF5BD38A);
-const _warn = Color(0xFFF5B84B);
-const _bad = Color(0xFFFF7A7A);
+// ───────────── أدوات مساعدة ─────────────
 
-String _errText(Object e) => e is GitHubException ? e.message : '$e';
+String errText(Object e) => e is GitHubException ? e.message : '$e';
 
-void _toast(BuildContext c, String m) =>
+void toast(BuildContext c, String m) =>
     ScaffoldMessenger.of(c).showSnackBar(SnackBar(content: Text(m)));
 
-String _ago(DateTime t) {
+String ago(DateTime t) {
   final d = DateTime.now().difference(t);
   if (d.inMinutes < 1) return 'الآن';
   if (d.inMinutes < 60) return 'قبل ${d.inMinutes} دقيقة';
   if (d.inHours < 24) return 'قبل ${d.inHours} ساعة';
   return 'قبل ${d.inDays} يوم';
 }
+
+String fmtSize(int b) => b >= 1048576
+    ? '${(b / 1048576).toStringAsFixed(1)} MB'
+    : '${(b / 1024).toStringAsFixed(0)} KB';
 
 // ───────────── حالة التطبيق ─────────────
 
@@ -39,11 +41,14 @@ class AppState extends ChangeNotifier {
   GitHubApi? api;
   String? user;
   List<Repo> repos = [];
+  List<SavedApk> saved = [];
   Repo? current;
   bool loadingRepos = false;
   String? error;
 
   bool get signedIn => api != null;
+  String? get avatarUrl =>
+      user == null ? null : 'https://github.com/$user.png?size=96';
 
   Future<void> restore() async {
     final t = await auth.savedToken();
@@ -55,7 +60,7 @@ class AppState extends ChangeNotifier {
     try {
       user = await api!.login();
     } catch (e) {
-      error = _errText(e);
+      error = errText(e);
       if (e is GitHubException && e.statusCode == 401) {
         await signOut();
         return;
@@ -74,9 +79,16 @@ class AppState extends ChangeNotifier {
     try {
       repos = await a.listRepos();
     } catch (e) {
-      error = _errText(e);
+      error = errText(e);
     }
     loadingRepos = false;
+    notifyListeners();
+  }
+
+  Future<void> loadSaved() async {
+    try {
+      saved = await ApkStore.list();
+    } catch (_) {}
     notifyListeners();
   }
 
@@ -120,6 +132,7 @@ Future<void> main() async {
   try {
     await appState.restore();
   } catch (_) {}
+  await appState.loadSaved();
   runApp(const FlutterStudioApp());
 }
 
@@ -131,32 +144,7 @@ class FlutterStudioApp extends StatelessWidget {
     return MaterialApp(
       title: 'Flutter Studio',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.dark,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: _accent,
-          brightness: Brightness.dark,
-        ),
-        scaffoldBackgroundColor: _bg,
-        cardTheme: CardThemeData(
-          color: _surface,
-          elevation: 0,
-          margin: EdgeInsets.zero,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: const BorderSide(color: _border),
-          ),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: _bg,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: _border),
-          ),
-        ),
-      ),
+      theme: buildTheme(),
       builder: (context, child) =>
           Directionality(textDirection: TextDirection.rtl, child: child!),
       initialRoute: appState.signedIn ? '/home' : '/',
@@ -165,24 +153,6 @@ class FlutterStudioApp extends StatelessWidget {
         '/home': (_) => const MainShell(),
         '/new': (_) => const NewProjectScreen(),
       },
-    );
-  }
-}
-
-class StatusChip extends StatelessWidget {
-  const StatusChip(this.label, this.color, {super.key});
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(99),
-        border: Border.all(color: color),
-      ),
-      child: Text(label, style: TextStyle(color: color, fontSize: 12)),
     );
   }
 }
@@ -199,71 +169,92 @@ class StartScreen extends StatelessWidget {
     }
   }
 
+  Widget _feature(IconData icon, String text) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          children: [
+            IconBadge(icon),
+            const SizedBox(width: 14),
+            Expanded(child: Text(text)),
+          ],
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
-    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
     return Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Spacer(),
+              const Spacer(flex: 2),
               Center(
                 child: Container(
-                  width: 88,
-                  height: 88,
+                  width: 96,
+                  height: 96,
                   decoration: BoxDecoration(
-                    color: _surface,
-                    borderRadius: BorderRadius.circular(24),
-                    border: Border.all(color: _border),
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(color: AppColors.border),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.accent.withAlpha(40),
+                        blurRadius: 32,
+                      ),
+                    ],
                   ),
                   child: Center(
                     child: Transform.rotate(
                       angle: 0.785398,
                       child: Container(
-                        width: 36,
-                        height: 36,
+                        width: 40,
+                        height: 40,
                         decoration: BoxDecoration(
-                          color: _accent,
-                          borderRadius: BorderRadius.circular(6),
+                          color: AppColors.accent,
+                          borderRadius: BorderRadius.circular(8),
                         ),
                       ),
                     ),
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 24),
+              Text('Flutter Studio',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context)
+                      .textTheme
+                      .headlineMedium
+                      ?.copyWith(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
               const Text(
-                'Flutter Studio',
+                'أنشئ مشاريع Flutter وعدّلها وابنِها من جوالك',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 32, fontWeight: FontWeight.w600),
+                style: TextStyle(color: AppColors.muted, height: 1.6),
+              ),
+              const SizedBox(height: 32),
+              _feature(Icons.add_box_outlined, 'إنشاء مشروع بقالب جاهز'),
+              _feature(Icons.edit_note, 'تحرير الملفات وCommit مباشرة'),
+              _feature(Icons.rocket_launch_outlined,
+                  'بناء APK عبر GitHub Actions وتثبيته'),
+              const Spacer(flex: 3),
+              FilledButton.icon(
+                onPressed: () => _github(context),
+                icon: const Icon(Icons.login),
+                label: const Text('المتابعة عبر GitHub'),
               ),
               const SizedBox(height: 12),
-              Text(
-                'أنشئ مشاريع Flutter وعدّلها وابنِها من جوالك، مع مزامنة كاملة مع GitHub',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: muted, height: 1.7),
-              ),
-              const Spacer(),
-              FilledButton(
-                style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
-                onPressed: () => _github(context),
-                child: const Text('المتابعة عبر GitHub'),
-              ),
-              const SizedBox(height: 10),
               OutlinedButton(
-                style: OutlinedButton.styleFrom(minimumSize: const Size(0, 48)),
                 onPressed: () =>
                     Navigator.pushReplacementNamed(context, '/home'),
                 child: const Text('تصفّح بدون حساب'),
               ),
-              const SizedBox(height: 12),
-              Text(
+              const SizedBox(height: 16),
+              const Text(
                 'بالمتابعة فأنت توافق على الشروط وسياسة الخصوصية',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: muted, fontSize: 12),
+                style: TextStyle(color: AppColors.muted, fontSize: 12),
               ),
             ],
           ),
@@ -296,24 +287,36 @@ class _MainShellState extends State<MainShell> {
     }
   }
 
+  void _go(int i) => setState(() => _index = i);
+
   @override
   Widget build(BuildContext context) {
     final pages = [
-      ProjectsPage(onOpen: () => setState(() => _index = 1)),
-      EditorPage(onBuild: () => setState(() => _index = 2)),
-      const BuildPage(),
+      ProjectsPage(onOpen: () => _go(1)),
+      EditorPage(onBuild: () => _go(2)),
+      BuildPage(onSaved: () {}),
+      const DownloadsPage(),
     ];
     return Scaffold(
       body: SafeArea(child: IndexedStack(index: _index, children: pages)),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        onDestinationSelected: _go,
         destinations: const [
           NavigationDestination(
-              icon: Icon(Icons.folder_outlined), label: 'المشاريع'),
-          NavigationDestination(icon: Icon(Icons.code), label: 'المحرر'),
+              icon: Icon(Icons.folder_outlined),
+              selectedIcon: Icon(Icons.folder),
+              label: 'المشاريع'),
           NavigationDestination(
-              icon: Icon(Icons.build_outlined), label: 'البناء'),
+              icon: Icon(Icons.code), label: 'المحرر'),
+          NavigationDestination(
+              icon: Icon(Icons.rocket_launch_outlined),
+              selectedIcon: Icon(Icons.rocket_launch),
+              label: 'البناء'),
+          NavigationDestination(
+              icon: Icon(Icons.download_for_offline_outlined),
+              selectedIcon: Icon(Icons.download_for_offline),
+              label: 'التنزيلات'),
         ],
       ),
     );
@@ -338,23 +341,14 @@ class _ProjectsPageState extends State<ProjectsPage> {
     return ListenableBuilder(
       listenable: appState,
       builder: (context, _) {
-        final muted = Theme.of(context).colorScheme.onSurfaceVariant;
-
         if (!appState.signedIn) {
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('سجّل الدخول لعرض مشاريعك من GitHub'),
-                  const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: () => signInFlow(context),
-                    child: const Text('المتابعة عبر GitHub'),
-                  ),
-                ],
-              ),
+          return EmptyState(
+            icon: Icons.lock_outline,
+            title: 'سجّل الدخول',
+            subtitle: 'اربط حساب GitHub لعرض مشاريعك وبنائها',
+            action: FilledButton(
+              onPressed: () => signInFlow(context),
+              child: const Text('المتابعة عبر GitHub'),
             ),
           );
         }
@@ -362,110 +356,168 @@ class _ProjectsPageState extends State<ProjectsPage> {
         final repos = appState.repos
             .where((r) => r.name.toLowerCase().contains(_q.toLowerCase()))
             .toList();
+        final loading = appState.loadingRepos;
 
-        return RefreshIndicator(
-          onRefresh: appState.loadRepos,
-          child: ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(20),
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        return Stack(
+          children: [
+            RefreshIndicator(
+              onRefresh: appState.loadRepos,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 100),
                 children: [
-                  const Text('مشاريعي',
-                      style:
-                          TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
                   Row(
                     children: [
-                      StatusChip('GitHub: @${appState.user ?? '...'}', _ok),
-                      IconButton(
-                        tooltip: 'تسجيل الخروج',
-                        onPressed: appState.signOut,
-                        icon: const Icon(Icons.logout, size: 20),
+                      CircleAvatar(
+                        radius: 24,
+                        backgroundColor: AppColors.surfaceHigh,
+                        backgroundImage: appState.avatarUrl == null
+                            ? null
+                            : NetworkImage(appState.avatarUrl!),
+                        onBackgroundImageError: (_, __) {},
+                        child: appState.avatarUrl == null
+                            ? const Icon(Icons.person)
+                            : null,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ScreenHeader(
+                          'مشاريعي',
+                          subtitle:
+                              '@${appState.user ?? '...'} · ${appState.repos.length} مستودع',
+                        ),
+                      ),
+                      PopupMenuButton<String>(
+                        onSelected: (_) => appState.signOut(),
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(
+                              value: 'out', child: Text('تسجيل الخروج')),
+                        ],
                       ),
                     ],
                   ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                onChanged: (v) => setState(() => _q = v),
-                decoration: const InputDecoration(
-                  hintText: 'ابحث في المشاريع',
-                  prefixIcon: Icon(Icons.search),
-                ),
-              ),
-              const SizedBox(height: 14),
-              if (appState.loadingRepos)
-                const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Center(child: CircularProgressIndicator()),
-                ),
-              if (appState.error != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 14),
-                  child: Text(appState.error!,
-                      style: const TextStyle(color: _bad)),
-                ),
-              for (final r in repos) ...[
-                Card(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    side: BorderSide(
-                      color: appState.current?.fullName == r.fullName
-                          ? _accent
-                          : _border,
+                  const SizedBox(height: 16),
+                  TextField(
+                    onChanged: (v) => setState(() => _q = v),
+                    decoration: const InputDecoration(
+                      hintText: 'ابحث في المشاريع',
+                      prefixIcon: Icon(Icons.search),
                     ),
                   ),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(14),
-                    onTap: () {
-                      appState.select(r);
-                      widget.onOpen();
-                    },
-                    child: Padding(
-                      padding: const EdgeInsets.all(14),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(r.name,
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.w600)),
-                              StatusChip(r.isPrivate ? 'خاص' : 'عام',
-                                  r.isPrivate ? Colors.grey : _accent),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Text(r.fullName,
-                              textDirection: TextDirection.ltr,
-                              style: TextStyle(
-                                  color: muted,
-                                  fontSize: 13,
-                                  fontFamily: 'monospace')),
-                          const SizedBox(height: 4),
-                          Text(
-                              'آخر تعديل: ${_ago(r.updatedAt)} · فرع ${r.defaultBranch}',
-                              style: TextStyle(color: muted, fontSize: 13)),
-                        ],
+                  const SizedBox(height: 16),
+                  if (loading && repos.isEmpty)
+                    for (var i = 0; i < 4; i++)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 12),
+                        child: Skeleton(),
+                      ),
+                  if (appState.error != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(appState.error!,
+                          style: const TextStyle(color: AppColors.bad)),
+                    ),
+                  if (!loading && repos.isEmpty && appState.error == null)
+                    const SizedBox(
+                      height: 320,
+                      child: EmptyState(
+                        icon: Icons.folder_off_outlined,
+                        title: 'لا توجد مشاريع',
+                        subtitle: 'أنشئ مشروعًا جديدًا أو غيّر كلمة البحث',
                       ),
                     ),
-                  ),
-                ),
-                const SizedBox(height: 14),
-              ],
-              FilledButton.icon(
-                style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
+                  for (final r in repos)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _RepoCard(
+                        repo: r,
+                        selected: appState.current?.fullName == r.fullName,
+                        onTap: () {
+                          appState.select(r);
+                          widget.onOpen();
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            PositionedDirectional(
+              end: 20,
+              bottom: 20,
+              child: FloatingActionButton.extended(
                 onPressed: () => Navigator.pushNamed(context, '/new'),
                 icon: const Icon(Icons.add),
                 label: const Text('مشروع جديد'),
               ),
-            ],
-          ),
+            ),
+          ],
         );
       },
+    );
+  }
+}
+
+class _RepoCard extends StatelessWidget {
+  const _RepoCard(
+      {required this.repo, required this.selected, required this.onTap});
+  final Repo repo;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: selected ? AppColors.accent : AppColors.border,
+          width: selected ? 1.5 : 1,
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              IconBadge(repo.isPrivate ? Icons.lock_outline : Icons.public),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(repo.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 16)),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        const Icon(Icons.call_split,
+                            size: 14, color: AppColors.muted),
+                        const SizedBox(width: 4),
+                        Text(repo.defaultBranch,
+                            style: const TextStyle(
+                                color: AppColors.muted, fontSize: 12)),
+                        const SizedBox(width: 12),
+                        const Icon(Icons.schedule,
+                            size: 14, color: AppColors.muted),
+                        const SizedBox(width: 4),
+                        Text(ago(repo.updatedAt),
+                            style: const TextStyle(
+                                color: AppColors.muted, fontSize: 12)),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              if (selected)
+                const Icon(Icons.check_circle, color: AppColors.accent),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -484,6 +536,49 @@ class _NewProjectScreenState extends State<NewProjectScreen> {
   final _pkg = TextEditingController(text: 'com.example.my_app');
   bool _private = true;
   bool _busy = false;
+  int _icon = -1; // -1: بدون، 0..: قالب، -2: صورة من الجهاز
+  Uint8List? _customPng;
+
+  Future<void> _pickIcon() async {
+    try {
+      final x = await ImagePicker().pickImage(source: ImageSource.gallery);
+      if (x == null) return;
+      final png = await customIconToPng(await x.readAsBytes());
+      setState(() {
+        _customPng = png;
+        _icon = -2;
+      });
+    } catch (_) {
+      if (mounted) toast(context, 'تعذّر قراءة الصورة');
+    }
+  }
+
+  Widget _iconTile(
+      {required bool selected,
+      required VoidCallback onTap,
+      required Widget child}) {
+    return Padding(
+      padding: const EdgeInsetsDirectional.only(end: 10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: _busy ? null : onTap,
+        child: Container(
+          width: 64,
+          height: 64,
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: selected ? AppColors.accent : AppColors.border,
+              width: selected ? 2 : 1,
+            ),
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -495,25 +590,29 @@ class _NewProjectScreenState extends State<NewProjectScreen> {
   Future<void> _create() async {
     final api = appState.api;
     if (api == null) {
-      _toast(context, 'سجّل الدخول عبر GitHub أولًا');
+      toast(context, 'سجّل الدخول عبر GitHub أولًا');
       return;
     }
     final name = _name.text.trim();
-    if (name.isEmpty) {
-      _toast(context, 'أدخل اسم المشروع');
+    if (!RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(name)) {
+      toast(context, 'اسم المشروع: أحرف إنجليزية وأرقام و - _ . فقط');
       return;
     }
     final parts = _pkg.text.trim().split('.');
-    final org =
-        parts.length > 1 ? parts.sublist(0, parts.length - 1).join('.') : 'com.example';
+    final org = parts.length > 1
+        ? parts.sublist(0, parts.length - 1).join('.')
+        : 'com.example';
 
     setState(() => _busy = true);
     try {
+      Uint8List? icon;
+      if (_icon >= 0) {
+        icon = await presetToPng(iconPresets[_icon]);
+      } else if (_icon == -2) {
+        icon = _customPng;
+      }
       final repo = await api.bootstrapFlutterProject(
-        name: name,
-        org: org,
-        private: _private,
-      );
+          name: name, org: org, private: _private, iconPng: icon);
       appState.addRepo(repo);
       if (!mounted) return;
       Navigator.pushNamedAndRemoveUntil(context, '/home', (r) => false,
@@ -521,7 +620,7 @@ class _NewProjectScreenState extends State<NewProjectScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _busy = false);
-        _toast(context, _errText(e));
+        toast(context, errText(e));
       }
     }
   }
@@ -533,47 +632,109 @@ class _NewProjectScreenState extends State<NewProjectScreen> {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
+          if (_busy) ...[
+            const LinearProgressIndicator(),
+            const SizedBox(height: 8),
+            const Text('جارٍ إنشاء المستودع ورفع الملفات...',
+                style: TextStyle(color: AppColors.muted)),
+            const SizedBox(height: 16),
+          ],
           TextField(
             controller: _name,
+            enabled: !_busy,
             textDirection: TextDirection.ltr,
-            decoration: const InputDecoration(labelText: 'اسم المشروع'),
+            decoration: const InputDecoration(
+              labelText: 'اسم المشروع',
+              prefixIcon: Icon(Icons.folder_outlined),
+            ),
           ),
           const SizedBox(height: 14),
           TextField(
             controller: _pkg,
+            enabled: !_busy,
             textDirection: TextDirection.ltr,
-            decoration: const InputDecoration(labelText: 'معرّف الحزمة'),
+            decoration: const InputDecoration(
+              labelText: 'معرّف الحزمة',
+              prefixIcon: Icon(Icons.badge_outlined),
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Text('أيقونة التطبيق',
+              style: TextStyle(color: AppColors.muted, fontSize: 13)),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 64,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                _iconTile(
+                  selected: _icon == -1,
+                  onTap: () => setState(() => _icon = -1),
+                  child: const Icon(Icons.block, color: AppColors.muted),
+                ),
+                for (var i = 0; i < iconPresets.length; i++)
+                  _iconTile(
+                    selected: _icon == i,
+                    onTap: () => setState(() => _icon = i),
+                    child: SizedBox.expand(
+                      child: CustomPaint(painter: PresetPainter(iconPresets[i])),
+                    ),
+                  ),
+                if (_customPng != null)
+                  _iconTile(
+                    selected: _icon == -2,
+                    onTap: () => setState(() => _icon = -2),
+                    child: Image.memory(_customPng!, fit: BoxFit.cover),
+                  ),
+                _iconTile(
+                  selected: false,
+                  onTap: _pickIcon,
+                  child: const Icon(Icons.add_photo_alternate_outlined,
+                      color: AppColors.accent),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _icon == -1
+                ? 'الأيقونة الافتراضية من Flutter'
+                : _icon == -2
+                    ? 'صورة من جهازك'
+                    : 'قالب: ${iconPresets[_icon].name}',
+            style: const TextStyle(color: AppColors.muted, fontSize: 12),
           ),
           const SizedBox(height: 14),
           Card(
             child: SwitchListTile(
+              secondary: const IconBadge(Icons.lock_outline),
               title: const Text('مستودع خاص'),
               subtitle: const Text('أوقفه لإنشاء مستودع عام'),
               value: _private,
-              onChanged: (v) => setState(() => _private = v),
+              onChanged: _busy ? null : (v) => setState(() => _private = v),
             ),
           ),
-          const SizedBox(height: 10),
-          Text(
-            'يُنشأ المستودع مع ملف Workflow لبناء Android عبر GitHub Actions.',
-            style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontSize: 13),
+          const SizedBox(height: 14),
+          Row(
+            children: const [
+              Icon(Icons.info_outline, size: 16, color: AppColors.muted),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'يُنشأ المستودع مع ملف Workflow لبناء Android عبر GitHub Actions.',
+                  style: TextStyle(color: AppColors.muted, fontSize: 13),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 20),
-          FilledButton(
-            style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
+          const SizedBox(height: 24),
+          FilledButton.icon(
             onPressed: _busy ? null : _create,
-            child: _busy
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('إنشاء وربط المستودع'),
+            icon: const Icon(Icons.add_task),
+            label: const Text('إنشاء وربط المستودع'),
           ),
           const SizedBox(height: 10),
           OutlinedButton(
-            style: OutlinedButton.styleFrom(minimumSize: const Size(0, 48)),
             onPressed: _busy ? null : () => Navigator.pop(context),
             child: const Text('إلغاء'),
           ),
@@ -665,7 +826,7 @@ class _EditorPageState extends State<EditorPage> {
       if (mounted) {
         setState(() {
           _loading = false;
-          _error = _errText(e);
+          _error = errText(e);
         });
       }
     }
@@ -706,11 +867,11 @@ class _EditorPageState extends State<EditorPage> {
         _dirty = false;
         _saving = false;
       });
-      _toast(context, 'تم الـ Commit على ${repo.defaultBranch}');
+      toast(context, 'تم الـ Commit على ${repo.defaultBranch}');
     } catch (e) {
       if (mounted) {
         setState(() => _saving = false);
-        _toast(context, _errText(e));
+        toast(context, errText(e));
       }
     }
   }
@@ -722,6 +883,9 @@ class _EditorPageState extends State<EditorPage> {
     final p = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => FileBrowser(api: api, repo: repo),
     );
     if (p != null) {
@@ -734,39 +898,72 @@ class _EditorPageState extends State<EditorPage> {
   Widget build(BuildContext context) {
     final repo = _repo;
     if (repo == null) {
-      return const Center(child: Text('اختر مشروعًا من تبويب المشاريع'));
+      return const EmptyState(
+        icon: Icons.code_off,
+        title: 'لا يوجد مشروع محدد',
+        subtitle: 'اختر مشروعًا من تبويب المشاريع لتحرير ملفاته',
+      );
     }
     return Padding(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Expanded(
-                child: Text(
-                  _path,
-                  overflow: TextOverflow.ellipsis,
-                  textDirection: TextDirection.ltr,
-                  style: const TextStyle(fontFamily: 'monospace'),
-                ),
+                child: Text(repo.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700, fontSize: 18)),
               ),
-              StatusChip(repo.defaultBranch, Colors.grey),
+              Pill(repo.defaultBranch, AppColors.muted,
+                  icon: Icons.call_split),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
+          Card(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: _pickFile,
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                child: Row(
+                  children: [
+                    const Icon(Icons.description_outlined,
+                        size: 18, color: AppColors.accent),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(_path,
+                          overflow: TextOverflow.ellipsis,
+                          textDirection: TextDirection.ltr,
+                          style: const TextStyle(fontFamily: 'monospace')),
+                    ),
+                    if (_dirty) ...[
+                      const Pill('معدّل', AppColors.warn),
+                      const SizedBox(width: 8),
+                    ],
+                    const Icon(Icons.unfold_more, color: AppColors.muted),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
           Expanded(
             child: Card(
+              clipBehavior: Clip.antiAlias,
               child: _loading
                   ? const Center(child: CircularProgressIndicator())
                   : _error != null
                       ? Center(
                           child: Padding(
-                            padding: const EdgeInsets.all(14),
+                            padding: const EdgeInsets.all(16),
                             child: Text(_error!,
-                                style: const TextStyle(color: _bad),
-                                textAlign: TextAlign.center),
+                                textAlign: TextAlign.center,
+                                style:
+                                    const TextStyle(color: AppColors.bad)),
                           ),
                         )
                       : TextField(
@@ -779,38 +976,41 @@ class _EditorPageState extends State<EditorPage> {
                             if (!_dirty) setState(() => _dirty = true);
                           },
                           style: const TextStyle(
-                              fontFamily: 'monospace', fontSize: 13, height: 1.6),
+                              fontFamily: 'monospace',
+                              fontSize: 13,
+                              height: 1.6),
                           decoration: const InputDecoration(
-                            border: InputBorder.none,
                             filled: false,
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
                             contentPadding: EdgeInsets.all(14),
                           ),
                         ),
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
-                child: OutlinedButton(
+                child: FilledButton.icon(
                   onPressed: _dirty && !_saving ? _commit : null,
-                  child: _saving
+                  icon: _saving
                       ? const SizedBox(
                           width: 18,
                           height: 18,
                           child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Commit'),
+                      : const Icon(Icons.check),
+                  label: const Text('Commit'),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: OutlinedButton(
-                    onPressed: _pickFile, child: const Text('الملفات')),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: FilledButton(
-                    onPressed: widget.onBuild, child: const Text('بناء')),
+                child: FilledButton.tonalIcon(
+                  onPressed: widget.onBuild,
+                  icon: const Icon(Icons.rocket_launch_outlined),
+                  label: const Text('بناء'),
+                ),
               ),
             ],
           ),
@@ -854,7 +1054,7 @@ class _FileBrowserState extends State<FileBrowser> {
           : (a.isDir ? -1 : 1));
       if (mounted) setState(() => _items = l);
     } catch (e) {
-      if (mounted) setState(() => _error = _errText(e));
+      if (mounted) setState(() => _error = errText(e));
     }
   }
 
@@ -868,36 +1068,69 @@ class _FileBrowserState extends State<FileBrowser> {
   Widget build(BuildContext context) {
     final items = _items;
     return SizedBox(
-      height: MediaQuery.of(context).size.height * 0.6,
-      child: _error != null
-          ? Center(child: Text(_error!, style: const TextStyle(color: _bad)))
-          : items == null
-              ? const Center(child: CircularProgressIndicator())
-              : ListView(
-                  children: [
-                    if (_dir.isNotEmpty)
-                      ListTile(
-                        leading: const Icon(Icons.arrow_upward),
-                        title: const Text('..'),
-                        onTap: _up,
-                      ),
-                    for (final e in items)
-                      ListTile(
-                        leading: Icon(e.isDir
-                            ? Icons.folder_outlined
-                            : Icons.description_outlined),
-                        title: Text(e.name, textDirection: TextDirection.ltr),
-                        onTap: () {
-                          if (e.isDir) {
-                            _dir = e.path;
-                            _load();
-                          } else {
-                            Navigator.pop(context, e.path);
-                          }
-                        },
-                      ),
-                  ],
+      height: MediaQuery.of(context).size.height * 0.65,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+            child: Row(
+              children: [
+                const Text('الملفات',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
+                const Spacer(),
+                Flexible(
+                  child: Text(_dir.isEmpty ? '/' : '/$_dir',
+                      overflow: TextOverflow.ellipsis,
+                      textDirection: TextDirection.ltr,
+                      style: const TextStyle(
+                          color: AppColors.muted, fontFamily: 'monospace')),
                 ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: _error != null
+                ? Center(
+                    child: Text(_error!,
+                        style: const TextStyle(color: AppColors.bad)))
+                : items == null
+                    ? const Center(child: CircularProgressIndicator())
+                    : ListView(
+                        children: [
+                          if (_dir.isNotEmpty)
+                            ListTile(
+                              leading: const Icon(Icons.arrow_upward),
+                              title: const Text('..'),
+                              onTap: _up,
+                            ),
+                          for (final e in items)
+                            ListTile(
+                              leading: Icon(
+                                e.isDir
+                                    ? Icons.folder_outlined
+                                    : Icons.description_outlined,
+                                color: e.isDir
+                                    ? AppColors.accent
+                                    : AppColors.muted,
+                              ),
+                              title: Text(e.name,
+                                  textDirection: TextDirection.ltr),
+                              onTap: () {
+                                if (e.isDir) {
+                                  _dir = e.path;
+                                  _load();
+                                } else {
+                                  Navigator.pop(context, e.path);
+                                }
+                              },
+                            ),
+                        ],
+                      ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -905,7 +1138,8 @@ class _FileBrowserState extends State<FileBrowser> {
 // ───────────── البناء ─────────────
 
 class BuildPage extends StatefulWidget {
-  const BuildPage({super.key});
+  const BuildPage({super.key, required this.onSaved});
+  final VoidCallback onSaved;
 
   @override
   State<BuildPage> createState() => _BuildPageState();
@@ -915,9 +1149,11 @@ class _BuildPageState extends State<BuildPage> {
   String _target = 'apk'; // apk | appbundle
   BuildSnapshot? _snap;
   bool _running = false;
-  bool _downloading = false;
+  bool _saving = false;
   String? _error;
+  List<SavedApk> _justSaved = const [];
   StreamSubscription<BuildSnapshot>? _sub;
+  String? _lastRepo;
 
   @override
   void initState() {
@@ -932,8 +1168,6 @@ class _BuildPageState extends State<BuildPage> {
     super.dispose();
   }
 
-  String? _lastRepo;
-
   void _reset() {
     final name = appState.current?.fullName;
     if (name != _lastRepo) {
@@ -943,6 +1177,7 @@ class _BuildPageState extends State<BuildPage> {
         _snap = null;
         _running = false;
         _error = null;
+        _justSaved = const [];
       });
     }
   }
@@ -956,6 +1191,7 @@ class _BuildPageState extends State<BuildPage> {
       _running = true;
       _snap = null;
       _error = null;
+      _justSaved = const [];
     });
     try {
       await api.dispatchBuild(repo.owner, repo.name,
@@ -966,7 +1202,7 @@ class _BuildPageState extends State<BuildPage> {
         _running = false;
         _error = notFound
             ? 'لم يُعثر على build.yml في المستودع. أنشئ المشروع من التطبيق أو أضف الملف يدويًا.'
-            : _errText(e);
+            : errText(e);
       });
       return;
     }
@@ -980,7 +1216,7 @@ class _BuildPageState extends State<BuildPage> {
       (s) => setState(() => _snap = s),
       onError: (Object e) => setState(() {
         _running = false;
-        _error = _errText(e);
+        _error = errText(e);
       }),
       onDone: () => setState(() => _running = false),
     );
@@ -999,149 +1235,377 @@ class _BuildPageState extends State<BuildPage> {
     _attach(api.watchRun(repo.owner, repo.name, id));
   }
 
-  Future<void> _download(BuildArtifact a) async {
+  /// ينزّل ناتج البناء، ويفك الضغط، ويحفظ ملف APK داخل التطبيق.
+  Future<void> _extract(BuildArtifact a) async {
     final repo = appState.current;
     final api = appState.api;
     if (repo == null || api == null) return;
-    setState(() => _downloading = true);
+    setState(() => _saving = true);
     try {
       final bytes = await api.downloadArtifact(repo.owner, repo.name, a.id);
-      final archive = ZipDecoder().decodeBytes(bytes);
-      final dir = await getTemporaryDirectory();
-      final paths = <XFile>[];
-      for (final f in archive.files) {
-        if (!f.isFile) continue;
-        final out = File('${dir.path}/${f.name.split('/').last}');
-        await out.writeAsBytes(f.content as List<int>);
-        paths.add(XFile(out.path));
-      }
-      if (paths.isEmpty) throw GitHubException('الملف المضغوط فارغ');
-      await Share.shareXFiles(paths);
+      final saved = await ApkStore.saveFromZip(bytes, prefix: repo.name);
+      await appState.loadSaved();
+      if (!mounted) return;
+      setState(() => _justSaved = saved);
+      toast(context, 'تم استخراج الملف وحفظه داخل التطبيق');
     } catch (e) {
-      if (mounted) _toast(context, _errText(e));
+      if (mounted) toast(context, errText(e));
     }
-    if (mounted) setState(() => _downloading = false);
+    if (mounted) setState(() => _saving = false);
   }
 
-  Widget _stepChip(BuildStep s) {
+  Widget _stepTile(BuildStep s) {
+    final Widget icon;
     if (s.isDone) {
-      if (s.failed) return const StatusChip('فشل', _bad);
-      if (s.conclusion == 'skipped') {
-        return const StatusChip('تم تخطيه', Colors.grey);
+      if (s.failed) {
+        icon = const Icon(Icons.cancel, color: AppColors.bad, size: 22);
+      } else if (s.conclusion == 'skipped') {
+        icon = const Icon(Icons.remove_circle_outline,
+            color: AppColors.muted, size: 22);
+      } else {
+        icon = const Icon(Icons.check_circle, color: AppColors.ok, size: 22);
       }
-      return const StatusChip('تم', _ok);
+    } else if (s.isRunning) {
+      icon = const SizedBox(
+        width: 20,
+        height: 20,
+        child: CircularProgressIndicator(
+            strokeWidth: 2.5, color: AppColors.warn),
+      );
+    } else {
+      icon = const Icon(Icons.radio_button_unchecked,
+          color: AppColors.muted, size: 22);
     }
-    if (s.isRunning) return const StatusChip('جارٍ', _warn);
-    return const StatusChip('بانتظار', Colors.grey);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 9),
+      child: Row(
+        children: [
+          SizedBox(width: 24, child: Center(child: icon)),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text(s.name,
+                style: TextStyle(
+                  color: s.isDone || s.isRunning
+                      ? AppColors.text
+                      : AppColors.muted,
+                  fontWeight: s.isRunning ? FontWeight.w600 : FontWeight.w400,
+                )),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final repo = appState.current;
     if (repo == null) {
-      return const Center(child: Text('اختر مشروعًا من تبويب المشاريع'));
+      return const EmptyState(
+        icon: Icons.rocket_launch_outlined,
+        title: 'لا يوجد مشروع محدد',
+        subtitle: 'اختر مشروعًا من تبويب المشاريع لبدء البناء',
+      );
     }
     final snap = _snap;
+    final steps = snap?.steps ?? const <BuildStep>[];
+    final done = steps.where((s) => s.isDone).length;
+
     final Widget status;
     if (snap == null) {
-      status = StatusChip(_running ? 'قيد التشغيل' : 'جاهز', Colors.grey);
+      status = Pill(_running ? 'قيد التشغيل' : 'جاهز', AppColors.muted);
     } else if (!snap.isFinished) {
-      status = const StatusChip('قيد التنفيذ', _warn);
+      status = const Pill('قيد التنفيذ', AppColors.warn, icon: Icons.sync);
     } else if (snap.succeeded) {
-      status = const StatusChip('اكتمل', _ok);
+      status = const Pill('اكتمل', AppColors.ok, icon: Icons.check);
     } else {
-      status = const StatusChip('فشل', _bad);
+      status = const Pill('فشل', AppColors.bad, icon: Icons.close);
     }
 
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text('بناء المشروع',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
-            status,
-          ],
-        ),
-        const SizedBox(height: 6),
-        Text(repo.fullName,
-            textDirection: TextDirection.ltr,
-            style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontSize: 13)),
-        const SizedBox(height: 14),
+        ScreenHeader('بناء المشروع', subtitle: repo.fullName, trailing: status),
+        const SizedBox(height: 16),
         SegmentedButton<String>(
           segments: const [
-            ButtonSegment(value: 'apk', label: Text('APK')),
-            ButtonSegment(value: 'appbundle', label: Text('AAB')),
+            ButtonSegment(
+                value: 'apk',
+                label: Text('APK'),
+                icon: Icon(Icons.android)),
+            ButtonSegment(
+                value: 'appbundle',
+                label: Text('AAB'),
+                icon: Icon(Icons.inventory_2_outlined)),
           ],
           selected: {_target},
           onSelectionChanged:
               _running ? null : (s) => setState(() => _target = s.first),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          onPressed: _running ? null : _start,
+          icon: const Icon(Icons.rocket_launch),
+          label: Text(snap == null ? 'بدء البناء' : 'إعادة البناء'),
+        ),
+        const SizedBox(height: 20),
+        if (_running || snap != null) ...[
+          ClipRRect(
+            borderRadius: BorderRadius.circular(99),
+            child: LinearProgressIndicator(
+              minHeight: 6,
+              value: steps.isEmpty ? null : done / steps.length,
+              backgroundColor: AppColors.surfaceHigh,
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         Card(
           child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: snap == null || snap.steps.isEmpty
-                ? Text(
-                    _running ? 'جارٍ تشغيل البناء على GitHub...' : 'لم يبدأ بناء بعد',
-                    textAlign: TextAlign.center)
-                : Column(
-                    children: [
-                      for (final s in snap.steps)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Flexible(child: Text(s.name)),
-                              _stepChip(s),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: steps.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 24),
+                    child: Center(
+                      child: Text(
+                        _running
+                            ? 'جارٍ تشغيل البناء على GitHub...'
+                            : 'لم يبدأ بناء بعد',
+                        style: const TextStyle(color: AppColors.muted),
+                      ),
+                    ),
+                  )
+                : Column(children: [for (final s in steps) _stepTile(s)]),
           ),
         ),
         if (_error != null) ...[
           const SizedBox(height: 14),
-          Text(_error!, style: const TextStyle(color: _bad)),
+          Text(_error!, style: const TextStyle(color: AppColors.bad)),
           if (snap != null && !snap.isFinished) ...[
             const SizedBox(height: 10),
             OutlinedButton(
-              style: OutlinedButton.styleFrom(minimumSize: const Size(0, 48)),
               onPressed: _resume,
               child: const Text('استئناف المتابعة'),
             ),
           ],
         ],
-        const SizedBox(height: 14),
-        FilledButton(
-          style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
-          onPressed: _running ? null : _start,
-          child: Text(snap == null ? 'بدء البناء' : 'إعادة البناء'),
-        ),
         if (snap != null && snap.isFinished) ...[
-          const SizedBox(height: 10),
-          for (final a in snap.artifacts.where((a) => !a.expired))
+          const SizedBox(height: 16),
+          if (snap.succeeded)
+            for (final a in snap.artifacts.where((a) => !a.expired))
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          const IconBadge(Icons.inventory_2_outlined,
+                              color: AppColors.ok),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('ناتج البناء',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.w600)),
+                                Text(
+                                    '${a.name} · ${fmtSize(a.sizeBytes)}',
+                                    textDirection: TextDirection.ltr,
+                                    style: const TextStyle(
+                                        color: AppColors.muted,
+                                        fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      FilledButton.icon(
+                        onPressed: _saving ? null : () => _extract(a),
+                        icon: _saving
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2))
+                            : const Icon(Icons.unarchive_outlined),
+                        label: Text(_saving
+                            ? 'جارٍ الاستخراج...'
+                            : 'استخراج APK وحفظه داخل التطبيق'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          for (final s in _justSaved)
             Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: FilledButton.tonal(
-                style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
-                onPressed: _downloading ? null : () => _download(a),
-                child: Text(_downloading ? 'جارٍ التنزيل...' : 'تنزيل ومشاركة الناتج'),
+              padding: const EdgeInsets.only(top: 12),
+              child: ApkTile(
+                apk: s,
+                onDeleted: () {
+                  setState(() => _justSaved = _justSaved
+                      .where((x) => x.file.path != s.file.path)
+                      .toList());
+                  appState.loadSaved();
+                },
               ),
             ),
-          OutlinedButton(
-            style: OutlinedButton.styleFrom(minimumSize: const Size(0, 48)),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
             onPressed: () => launchUrl(Uri.parse(snap.htmlUrl),
                 mode: LaunchMode.externalApplication),
-            child: const Text('عرض السجل على GitHub'),
+            icon: const Icon(Icons.open_in_new, size: 18),
+            label: const Text('عرض السجل على GitHub'),
           ),
         ],
       ],
+    );
+  }
+}
+
+// ───────────── ملفات APK المحفوظة ─────────────
+
+class ApkTile extends StatelessWidget {
+  const ApkTile({super.key, required this.apk, required this.onDeleted});
+  final SavedApk apk;
+  final VoidCallback onDeleted;
+
+  bool get _isApk => apk.name.endsWith('.apk');
+
+  Future<void> _install(BuildContext c) async {
+    final r = await OpenFilex.open(apk.file.path,
+        type: 'application/vnd.android.package-archive');
+    if (r.type != ResultType.done && c.mounted) toast(c, r.message);
+  }
+
+  Future<void> _delete(BuildContext c) async {
+    final ok = await showDialog<bool>(
+      context: c,
+      builder: (ctx) => AlertDialog(
+        title: const Text('حذف الملف؟'),
+        content: Text(apk.name, textDirection: TextDirection.ltr),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('إلغاء')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('حذف')),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await ApkStore.delete(apk);
+      onDeleted();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                IconBadge(_isApk ? Icons.android : Icons.inventory_2_outlined,
+                    color: AppColors.ok),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(apk.name,
+                          overflow: TextOverflow.ellipsis,
+                          textDirection: TextDirection.ltr,
+                          style:
+                              const TextStyle(fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 2),
+                      Text('${fmtSize(apk.size)} · ${ago(apk.modified)}',
+                          style: const TextStyle(
+                              color: AppColors.muted, fontSize: 12)),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'حذف',
+                  onPressed: () => _delete(context),
+                  icon: const Icon(Icons.delete_outline,
+                      color: AppColors.muted),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                if (_isApk) ...[
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () => _install(context),
+                      icon: const Icon(Icons.install_mobile),
+                      label: const Text('تثبيت'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                ],
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () =>
+                        Share.shareXFiles([XFile(apk.file.path)]),
+                    icon: const Icon(Icons.ios_share, size: 18),
+                    label: const Text('مشاركة'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class DownloadsPage extends StatelessWidget {
+  const DownloadsPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: appState,
+      builder: (context, _) {
+        final items = appState.saved;
+        return RefreshIndicator(
+          onRefresh: appState.loadSaved,
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(20),
+            children: [
+              ScreenHeader('التنزيلات',
+                  subtitle: '${items.length} ملف محفوظ داخل التطبيق'),
+              const SizedBox(height: 16),
+              if (items.isEmpty)
+                const SizedBox(
+                  height: 420,
+                  child: EmptyState(
+                    icon: Icons.download_for_offline_outlined,
+                    title: 'لا توجد ملفات بعد',
+                    subtitle:
+                        'بعد نجاح البناء اضغط «استخراج APK» في تبويب البناء لحفظ الملف هنا',
+                  ),
+                ),
+              for (final a in items)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: ApkTile(apk: a, onDeleted: appState.loadSaved),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
