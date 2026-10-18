@@ -192,21 +192,52 @@ class GitHubApi {
     return (j['content'] as Map<String, dynamic>)['sha'] as String;
   }
 
+  /// يكتب ملفًا ثنائيًا (مثل صورة PNG) في المستودع.
+  Future<void> writeBytes(
+    String owner,
+    String repo,
+    String path,
+    List<int> bytes,
+    String message, {
+    String? sha,
+    String? branch,
+  }) async {
+    await _send('PUT', '/repos/$owner/$repo/contents/$path', body: {
+      'message': message,
+      'content': base64.encode(bytes),
+      if (sha != null) 'sha': sha,
+      if (branch != null) 'branch': branch,
+    });
+  }
+
   /// ينشئ مستودعًا ويرفع ملفات Flutter الأساسية وملف workflow للبناء.
   Future<Repo> bootstrapFlutterProject({
     required String name,
     String org = 'com.example',
     bool private = true,
+    List<int>? iconPng,
   }) async {
     final repo = await createRepo(name, private: private);
     await Future.delayed(const Duration(seconds: 2));
-    final files =
-        starterFiles(packageName: toPackageName(name), org: org);
+    final files = starterFiles(
+        packageName: toPackageName(name),
+        org: org,
+        withIcon: iconPng != null);
+    // ملف workflow يُكتب أخيرًا حتى تكون كل الملفات موجودة قبل تشغيله
+    final workflow = files.remove(kBuildWorkflowPath)!;
     for (final e in files.entries) {
       await writeFile(repo.owner, repo.name, e.key, e.value,
           'Add ${e.key}',
           branch: repo.defaultBranch);
     }
+    if (iconPng != null) {
+      await writeBytes(repo.owner, repo.name, 'assets/icon/icon.png', iconPng,
+          'Add app icon',
+          branch: repo.defaultBranch);
+    }
+    await writeFile(repo.owner, repo.name, kBuildWorkflowPath, workflow,
+        'Add $kBuildWorkflowPath',
+        branch: repo.defaultBranch);
     return repo;
   }
 
