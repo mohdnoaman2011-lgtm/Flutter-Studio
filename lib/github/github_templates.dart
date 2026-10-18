@@ -17,9 +17,13 @@ String toPackageName(String input) {
 Map<String, String> starterFiles({
   required String packageName,
   String org = 'com.example',
+  bool withIcon = false,
 }) {
-  String fill(String t) =>
-      t.replaceAll('__PACKAGE__', packageName).replaceAll('__ORG__', org);
+  String fill(String t) => t
+      .replaceAll('__PACKAGE__', packageName)
+      .replaceAll('__ORG__', org)
+      .replaceAll('__ICON_DEP__', withIcon ? '  flutter_launcher_icons: ^0.14.1' : '')
+      .replaceAll('__ICON_CFG__', withIcon ? _iconConfig : '');
   return {
     'pubspec.yaml': fill(_pubspec),
     'lib/main.dart': _mainDart,
@@ -27,6 +31,12 @@ Map<String, String> starterFiles({
     kBuildWorkflowPath: fill(_workflow),
   };
 }
+
+const _iconConfig = """flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: assets/icon/icon.png
+""";
 
 const _pubspec = r"""name: __PACKAGE__
 description: A new Flutter project.
@@ -44,7 +54,9 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+__ICON_DEP__
 
+__ICON_CFG__
 flutter:
   uses-material-design: true
 """;
@@ -113,6 +125,10 @@ jobs:
 
       - name: Pub get
         run: flutter pub get
+
+      - name: Generate launcher icons
+        if: ${{ hashFiles('assets/icon/icon.png') != '' }}
+        run: dart run flutter_launcher_icons
 
       - name: Analyze
         run: flutter analyze --no-fatal-infos
