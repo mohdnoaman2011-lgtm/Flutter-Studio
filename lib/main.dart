@@ -970,11 +970,13 @@ class _BuildPageState extends State<BuildPage> {
       });
       return;
     }
+    _attach(api.watchBuild(repo.owner, repo.name,
+        branch: repo.defaultBranch, startedAt: startedAt));
+  }
+
+  void _attach(Stream<BuildSnapshot> stream) {
     _sub?.cancel();
-    _sub = api
-        .watchBuild(repo.owner, repo.name,
-            branch: repo.defaultBranch, startedAt: startedAt)
-        .listen(
+    _sub = stream.listen(
       (s) => setState(() => _snap = s),
       onError: (Object e) => setState(() {
         _running = false;
@@ -982,6 +984,19 @@ class _BuildPageState extends State<BuildPage> {
       }),
       onDone: () => setState(() => _running = false),
     );
+  }
+
+  /// يستأنف متابعة التشغيل نفسه بعد انقطاع الاتصال، دون بدء بناء جديد.
+  void _resume() {
+    final repo = appState.current;
+    final api = appState.api;
+    final id = _snap?.runId;
+    if (repo == null || api == null || id == null) return;
+    setState(() {
+      _running = true;
+      _error = null;
+    });
+    _attach(api.watchRun(repo.owner, repo.name, id));
   }
 
   Future<void> _download(BuildArtifact a) async {
@@ -1093,6 +1108,14 @@ class _BuildPageState extends State<BuildPage> {
         if (_error != null) ...[
           const SizedBox(height: 14),
           Text(_error!, style: const TextStyle(color: _bad)),
+          if (snap != null && !snap.isFinished) ...[
+            const SizedBox(height: 10),
+            OutlinedButton(
+              style: OutlinedButton.styleFrom(minimumSize: const Size(0, 48)),
+              onPressed: _resume,
+              child: const Text('استئناف المتابعة'),
+            ),
+          ],
         ],
         const SizedBox(height: 14),
         FilledButton(
