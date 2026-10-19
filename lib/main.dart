@@ -192,11 +192,11 @@ class StartScreen extends StatelessWidget {
               const Spacer(flex: 2),
               Center(
                 child: Container(
-                  width: 96,
-                  height: 96,
+                  width: 112,
+                  height: 112,
+                  clipBehavior: Clip.antiAlias,
                   decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(28),
+                    borderRadius: BorderRadius.circular(30),
                     border: Border.all(color: AppColors.border),
                     boxShadow: [
                       BoxShadow(
@@ -205,19 +205,7 @@ class StartScreen extends StatelessWidget {
                       ),
                     ],
                   ),
-                  child: Center(
-                    child: Transform.rotate(
-                      angle: 0.785398,
-                      child: Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: AppColors.accent,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                    ),
-                  ),
+                  child: Image.asset('assets/icon/logo.png', fit: BoxFit.cover),
                 ),
               ),
               const SizedBox(height: 24),
